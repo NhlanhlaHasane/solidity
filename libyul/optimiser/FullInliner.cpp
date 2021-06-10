@@ -183,7 +183,12 @@ bool FullInliner::shallInline(FunctionCall const& _funCall, YulString _callSite)
 		auto evmDialect = dynamic_cast<EVMDialect const*>(&m_dialect);
 		!evmDialect || !evmDialect->providesObjectAccess() || evmDialect->evmVersion() <= langutil::EVMVersion::homestead()
 	)
+	{
 		if (m_functionSizes.at(_callSite) > 45)
+			return false;
+	}
+	else
+		if (m_functionSizes.at(_callSite) > 350)
 			return false;
 
 	if (m_singleUse.count(calledFunction->name))
