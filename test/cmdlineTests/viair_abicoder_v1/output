@@ -7,6 +7,7 @@ IR:
  *******************************************************/
 
 
+/// @src 0:79,169
 object "test_11" {
     code {
         mstore(64, 128)
@@ -82,6 +83,7 @@ object "test_11" {
                 cleaned := iszero(iszero(value))
             }
 
+            /// @src 0:99,167
             function fun_f_10() -> var__5 {
                 /// @src 0:133,137
                 let zero_t_bool_1 := zero_value_for_split_t_bool()

@@ -26,8 +26,15 @@
 #include <algorithm>
 #include <string>
 
+namespace solidity::util
+{
+	class Whiskers;
+}
+
 namespace solidity::frontend
 {
+
+class IRGenerationContext;
 
 /**
  * Structure that describes arity and co-arity of a Yul function, i.e. the number of its inputs and outputs.
@@ -65,6 +72,30 @@ struct IRNames
 	static std::string tupleComponent(size_t _i);
 	static std::string zeroValue(Type const& _type, std::string const& _variableName);
 };
+
+
+/**
+ * Fills out source location related variables in a whiskers template.
+ * Specifically:
+ * - "sourceIndex"
+ * - "sourceLocationStart"
+ * - "sourceLocationEnd"
+ * @param _template template to fill out
+ * @param _node AST node to retrieve location from
+ * @return a reference to the whiskers template
+ */
+solidity::util::Whiskers& addSourceInformation(solidity::util::Whiskers& _template, ASTNode const& _node, IRGenerationContext const& _context);
+
+/**
+ * Returns a source location comment in the form of
+ * `/// @src <sourceIndex>:<locationStart>:<locationEnd>`.
+ *
+ * @param _location location to use for the comment.
+ * @param _context compiler context.
+ * @return the source location comment.
+ */
+std::string sourceLocationComment(langutil::SourceLocation const& _location, IRGenerationContext const& _context);
+std::string sourceLocationComment(ASTNode const& _node, IRGenerationContext const& _context);
 
 }
 
