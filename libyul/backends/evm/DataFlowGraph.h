@@ -141,7 +141,7 @@ struct DFG
 	/// Maintains a list of entry blocks and a typed exit.
 	struct BasicBlock
 	{
-		std::vector<BasicBlock const*> entries;
+		std::vector<BasicBlock*> entries;
 		std::vector<Operation> operations;
 		struct MainExit {};
 		struct ConditionalJump

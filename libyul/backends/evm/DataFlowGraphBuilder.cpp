@@ -79,10 +79,12 @@ std::unique_ptr<DFG> DataFlowGraphBuilder::build(
 
 	// Remove all entries from unreachable nodes from the graph.
 	for (auto* node: reachabilityCheck.visited)
-		cxx20::erase_if(node->entries, [&](DFG::BasicBlock const* entry) -> bool {
-			// TODO: the const_cast is harmless, but weird.
-			return !reachabilityCheck.visited.count(const_cast<DFG::BasicBlock*>(entry));
+		cxx20::erase_if(node->entries, [&](DFG::BasicBlock* entry) -> bool {
+			return !reachabilityCheck.visited.count(entry);
 		});
+
+	// TODO: it might be worthwhile to run some further simplifications on the graph itself here.
+	// Like if there is a jump to a node that has the jumping node as its only entry, the nodes can be fused, etc.
 
 	return result;
 }
@@ -113,7 +115,6 @@ StackSlot DataFlowGraphBuilder::operator()(Expression const& _expression)
 	return std::visit(*this, _expression);
 }
 
-
 DFG::Operation& DataFlowGraphBuilder::visitFunctionCall(FunctionCall const& _call)
 {
 	yulAssert(m_scope, "");
@@ -137,7 +138,7 @@ DFG::Operation& DataFlowGraphBuilder::visitFunctionCall(FunctionCall const& _cal
 				return TemporarySlot{_call, _i};
 			}) | ranges::to<Stack>,
 			// operation
-			DFG::BuiltinCall{_call.debugData, *builtin, _call},
+			DFG::BuiltinCall{_call.debugData, *builtin, _call}
 		});
 		std::get<DFG::BuiltinCall>(operation.operation).arguments = operation.input.size();
 		return operation;
@@ -150,7 +151,7 @@ DFG::Operation& DataFlowGraphBuilder::visitFunctionCall(FunctionCall const& _cal
 			[&](Scope::Function& _function) { function = &_function; }
 		}), "Function name not found.");
 		yulAssert(function, "");
-		DFG::Operation& operation = m_currentBlock->operations.emplace_back(DFG::Operation{
+		return m_currentBlock->operations.emplace_back(DFG::Operation{
 			// input
 			ranges::concat_view(
 				ranges::views::single(StackSlot{FunctionCallReturnLabelSlot{_call}}),
@@ -163,7 +164,6 @@ DFG::Operation& DataFlowGraphBuilder::visitFunctionCall(FunctionCall const& _cal
 			// operation
 			DFG::FunctionCall{_call.debugData, *function, _call}
 		});
-		return operation;
 	}
 }
 

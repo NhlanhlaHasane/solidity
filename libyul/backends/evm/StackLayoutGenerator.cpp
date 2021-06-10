@@ -460,49 +460,65 @@ void StackLayoutGenerator::stitchConditionalJumps(DFG::BasicBlock& _block)
 void StackLayoutGenerator::fixStackTooDeep(DFG::BasicBlock& _block)
 {
 	// This is just an initial proof of concept. Doing this in a clever way and in all cases will take some doing.
+	// TODO: make sure this really always terminates.
 	util::BreadthFirstSearch<DFG::BasicBlock*> breadthFirstSearch{{&_block}};
 	breadthFirstSearch.run([&](DFG::BasicBlock* _block, auto _addChild) {
 		Stack stack;
 		stack = m_layout.blockInfos.at(_block).entryLayout;
 
-		for (auto&& [index, operation]: _block->operations | ranges::views::enumerate)
+		size_t cursor = 1;
+
+		while (cursor < _block->operations.size())
 		{
-			Stack& operationEntry = m_layout.operationEntryLayout.at(&operation);
+			Stack& operationEntry = cursor < _block->operations.size() ?
+				m_layout.operationEntryLayout.at(&_block->operations.at(cursor)) :
+				m_layout.blockInfos.at(_block).exitLayout;
+
 			auto unreachable = OptimizedEVMCodeTransform::tryCreateStackLayout(stack, operationEntry);
-			if (!unreachable.empty())
+			if (unreachable.empty())
 			{
-				std::cout << "UNREACHABLE SLOTS DURING OPERATION ENTRY: " << stackToString(unreachable) << std::endl;
-				std::cout << "ATTEMPTING AD HOC FIX" << std::endl;
-				for (auto& op: (_block->operations | ranges::views::take(index)) | ranges::views::reverse)
+				stack = operationEntry;
+				if (cursor < _block->operations.size())
 				{
-					Stack& opEntry = m_layout.operationEntryLayout.at(&op);
-					Stack newStack = ranges::concat_view(
-						opEntry | ranges::views::take(opEntry.size() - op.input.size()),
-						unreachable,
-						opEntry | ranges::views::take_last(op.input.size())
-					) | ranges::to<Stack>;
-					opEntry = newStack;
+					DFG::Operation& operation = _block->operations.at(cursor);
+					for (size_t i = 0; i < operation.input.size(); i++)
+						stack.pop_back();
+					stack += operation.output;
 				}
+				++cursor;
 			}
-			stack = operationEntry;
-			for (size_t i = 0; i < operation.input.size(); i++)
-				stack.pop_back();
-			stack += operation.output;
-		}
-		auto unreachable = OptimizedEVMCodeTransform::tryCreateStackLayout(stack, m_layout.blockInfos.at(_block).exitLayout);
-		if (!unreachable.empty())
-		{
-			std::cout << "UNREACHABLE SLOTS AT BLOCK EXIT: " << stackToString(unreachable) << std::endl;
-			std::cout << "ATTEMPTING AD HOC FIX" << std::endl;
-			for (auto& op: _block->operations | ranges::views::reverse)
+			else
 			{
-				Stack& opEntry = m_layout.operationEntryLayout.at(&op);
+				DFG::Operation& previousOperation = _block->operations.at(cursor - 1);
+				if (auto const* assignment = get_if<DFG::Assignment>(&previousOperation.operation))
+				{
+					for (auto& slot: unreachable)
+						if (VariableSlot const* varSlot = get_if<VariableSlot>(&slot))
+							if (util::findOffset(assignment->variables, *varSlot))
+							{
+								std::cout << "Unreachable slot after assignment." << std::endl;
+								std::cout << "CANNOT FIX YET" << std::endl;
+								return;
+							}
+				}
+				Stack& previousEntry = m_layout.operationEntryLayout.at(&previousOperation);
 				Stack newStack = ranges::concat_view(
-					opEntry | ranges::views::take(opEntry.size() - op.input.size()),
+					previousEntry | ranges::views::take(previousEntry.size() - previousOperation.input.size()),
 					unreachable,
-					opEntry | ranges::views::take_last(op.input.size())
+					previousEntry | ranges::views::take_last(previousOperation.input.size())
 				) | ranges::to<Stack>;
-				opEntry = newStack;
+				previousEntry = newStack;
+				--cursor;
+				if (cursor > 0)
+				{
+					DFG::Operation& ancestorOperation = _block->operations.at(cursor - 1);
+					Stack& ancestorEntry = m_layout.operationEntryLayout.at(&ancestorOperation);
+					stack = ancestorEntry | ranges::views::take(ancestorEntry.size() - ancestorOperation.input.size()) | ranges::to<Stack>;
+					stack += ancestorOperation.output;
+				}
+				else
+					// Stop at block entry, hope for the best and continue downwards again.
+					++cursor;
 			}
 		}
 		stack = m_layout.blockInfos.at(_block).exitLayout;
@@ -513,8 +529,7 @@ void StackLayoutGenerator::fixStackTooDeep(DFG::BasicBlock& _block)
 			{
 				auto unreachable = OptimizedEVMCodeTransform::tryCreateStackLayout(stack, m_layout.blockInfos.at(_jump.target).entryLayout);
 				if (!unreachable.empty())
-					std::cout
-						<< "UNREACHABLE SLOTS AT JUMP: " << stackToString(unreachable) << std::endl
+					std::cout << "UNREACHABLE SLOTS AT JUMP: " << stackToString(unreachable) << std::endl
 						<< "CANNOT FIX YET" << std::endl;
 
 				if (!_jump.backwards)

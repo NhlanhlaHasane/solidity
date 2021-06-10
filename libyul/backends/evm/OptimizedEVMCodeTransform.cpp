@@ -363,6 +363,7 @@ void OptimizedEVMCodeTransform::createStackLayout(Stack _targetStack)
 
 	if (!tryCreateStackLayout(m_stack, _targetStack).empty())
 	{
+		yulAssert(false, ""); // Make this a hard failure now to focus on avoiding it earlier.
 		// TODO: check if we can do better.
 		// Maybe switching to a general "fix everything deep first" algorithm.
 		std::map<unsigned, StackSlot> slotsByDepth;
