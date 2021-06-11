@@ -27,6 +27,7 @@
 #include <libsolutil/Visitor.h>
 #include <libsolutil/cxx20.h>
 
+#include <range/v3/action/push_back.hpp>
 #include <range/v3/view/drop.hpp>
 #include <range/v3/view/enumerate.hpp>
 #include <range/v3/view/filter.hpp>
@@ -121,6 +122,7 @@ void OptimizedEVMCodeTransform::operator()(CFG::FunctionInfo const& _functionInf
 
 void OptimizedEVMCodeTransform::operator()(CFG::FunctionCall const& _call)
 {
+	yulAssert(m_stack.size() >= _call.function.get().arguments.size() + 1, "");
 	auto returnLabel = m_returnLabels.at(&_call.functionCall.get());
 
 	// Assert that we got a correct arguments on stack for the call.
@@ -140,15 +142,21 @@ void OptimizedEVMCodeTransform::operator()(CFG::FunctionCall const& _call)
 		AbstractAssembly::JumpType::IntoFunction
 	);
 	m_assembly.appendLabel(returnLabel);
+	// Remove arguments and return label from m_stack.
 	for (size_t i = 0; i < _call.function.get().arguments.size() + 1; ++i)
 		m_stack.pop_back();
-	for (size_t i = 0; i < _call.function.get().returns.size(); ++i)
-		m_stack.emplace_back(TemporarySlot{_call.functionCall, i});
+	// Push return values to m_stack.
+	ranges::actions::push_back(
+		m_stack,
+		ranges::views::iota(0u, _call.function.get().returns.size()) |
+		ranges::views::transform([&](size_t _i) -> StackSlot { return TemporarySlot{_call.functionCall, _i}; })
+	);
 	yulAssert(m_assembly.stackHeight() == static_cast<int>(m_stack.size()), "");
 }
 
 void OptimizedEVMCodeTransform::operator()(CFG::BuiltinCall const& _call)
 {
+	yulAssert(m_stack.size() >= _call.arguments, "");
 	// Assert that we got a correct stack for the call.
 	for (auto&& [arg, slot]: ranges::zip_view(
 		_call.functionCall.get().arguments | ranges::views::enumerate |
@@ -160,10 +168,15 @@ void OptimizedEVMCodeTransform::operator()(CFG::BuiltinCall const& _call)
 
 	m_assembly.setSourceLocation(locationOf(_call));
 	static_cast<BuiltinFunctionForEVM const&>(_call.builtin.get()).generateCode(_call.functionCall, m_assembly, m_builtinContext, [](auto&&){});
+	// Remove arguments from m_stack.
 	for (size_t i = 0; i < _call.arguments; ++i)
 		m_stack.pop_back();
-	for (size_t i = 0; i < _call.builtin.get().returns.size(); ++i)
-		m_stack.emplace_back(TemporarySlot{_call.functionCall, i});
+	// Push return values to m_stack.
+	ranges::actions::push_back(
+		m_stack,
+		ranges::views::iota(0u, _call.builtin.get().returns.size()) |
+		ranges::views::transform([&](size_t _i) -> StackSlot { return TemporarySlot{_call.functionCall, _i};})
+	);
 	yulAssert(m_assembly.stackHeight() == static_cast<int>(m_stack.size()), "");
 }
 
@@ -180,9 +193,8 @@ void OptimizedEVMCodeTransform::operator()(CFG::Assignment const& _assignment)
 
 void OptimizedEVMCodeTransform::operator()(CFG::BasicBlock const& _block)
 {
-	if (m_generated.count(&_block))
+	if (!m_generated.insert(&_block).second)
 		return;
-	m_generated.insert(&_block);
 
 	auto&& [entryLayout, exitLayout] = m_stackLayout.blockInfos.at(&_block);
 
