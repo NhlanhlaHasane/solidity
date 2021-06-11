@@ -63,21 +63,35 @@ private:
 	);
 
 	AbstractAssembly::LabelID getFunctionLabel(Scope::Function const& _function);
-	void validateSlot(StackSlot const& _slot, Expression const& _expression);
 
-	void compressStack();
+	/// Shuffles m_stack to the desired @a _targetStack while emitting the shuffling code to m_assembly.
 	void createStackLayout(Stack _targetStack);
 
+	/// Generate code for the given block @a _block.
+	/// Expects the current stack layout m_stack to be a stack layout that is compatible with the
+	/// entry layout expected by the block.
 	void operator()(CFG::BasicBlock const& _block);
+
+	/// Generate code for the given function.
+	/// Resets m_stack.
 	void operator()(CFG::FunctionInfo const& _functionInfo);
 public:
+	/// Generate code for the function call @a _call.
 	void operator()(CFG::FunctionCall const& _call);
+	/// Generate code for the builtin call @a _call.
 	void operator()(CFG::BuiltinCall const& _call);
+	/// Generate code for the assignment @a _assignment.
 	void operator()(CFG::Assignment const& _assignment);
 
-	static Stack tryCreateStackLayout(Stack const& m_stack, Stack _targetStack);
+	/// @returns the stack slots that would become unreachable when createStackLayout was called with
+	/// @a _targetStack as argument while m_stack was @a _stack.
+	static Stack tryCreateStackLayout(Stack const& _stack, Stack _targetStack);
 
 private:
+	/// Assert that @a _slot contains the value of @a _expression.
+	static void validateSlot(StackSlot const& _slot, Expression const& _expression);
+	/// Assert that it is valid to transition from @a _currentStack to @a _desiredStack.
+	/// That is @a _currentStack matches each slot in @a _desiredStack that is not a JunkSlot exactly.
 	static void assertLayoutCompatibility(Stack const& _currentStack, Stack const& _desiredStack);
 
 	AbstractAssembly& m_assembly;
@@ -89,6 +103,8 @@ private:
 	std::map<yul::FunctionCall const*, AbstractAssembly::LabelID> m_returnLabels;
 	std::map<CFG::BasicBlock const*, AbstractAssembly::LabelID> m_blockLabels;
 	std::map<CFG::FunctionInfo const*, AbstractAssembly::LabelID> m_functionLabels;
+	/// Set of blocks already generated. If any of the contained blocks is ever jumped to, m_blockLabels should
+	/// contain a jump label for it.
 	std::set<CFG::BasicBlock const*> m_generated;
 	CFG::FunctionInfo const* m_currentFunctionInfo = nullptr;
 };

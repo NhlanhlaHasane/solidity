@@ -35,6 +35,7 @@
 #include <range/v3/view/concat.hpp>
 #include <range/v3/view/drop.hpp>
 #include <range/v3/view/drop_last.hpp>
+#include <range/v3/view/filter.hpp>
 #include <range/v3/view/map.hpp>
 #include <range/v3/view/reverse.hpp>
 #include <range/v3/view/take.hpp>
@@ -53,11 +54,11 @@ namespace
 {
 struct PreviousSlot { size_t slot; };
 
-Stack createIdealLayout(Stack const& post, vector<variant<PreviousSlot, set<unsigned>>> layout)
+// TODO: Rewrite this as custom algorithm matching createStackLayout exactly and make it work
+// for all cases, including duplicates and removals of slots that can be generated on the fly, etc.
+// After that the util::permute* functions can be removed.
+Stack createIdealLayout(Stack const& _post, vector<variant<PreviousSlot, set<unsigned>>> layout)
 {
-	// TODO: argue that util::permuteDup works with this kind of _getTargetPosition.
-	// Or even better... rewrite this as custom algorithm matching createStackLayout exactly and make it work
-	// for all cases, including duplicates and removals of slots that can be generated on the fly, etc.
 	util::permuteDup(static_cast<unsigned>(layout.size()), [&](unsigned _i) -> set<unsigned> {
 		// For call return values the target position is known.
 		if (set<unsigned>* pos = get_if<set<unsigned>>(&layout.at(_i)))
@@ -98,8 +99,8 @@ Stack createIdealLayout(Stack const& post, vector<variant<PreviousSlot, set<unsi
 	// Now we can construct the ideal layout before the operation.
 	// "layout" has the declared variables in the desired position and
 	// for any PreviousSlot{x}, x yields the ideal place of the slot before the declaration.
-	vector<optional<StackSlot>> idealLayout(post.size(), nullopt);
-	for (auto const& [slot, idealPosition]: ranges::zip_view(post, layout))
+	vector<optional<StackSlot>> idealLayout(_post.size(), nullopt);
+	for (auto const& [slot, idealPosition]: ranges::zip_view(_post, layout))
 		if (PreviousSlot* previousSlot = std::get_if<PreviousSlot>(&idealPosition))
 			idealLayout.at(previousSlot->slot) = slot;
 
@@ -120,22 +121,15 @@ Stack StackLayoutGenerator::propagateStackThroughOperation(Stack _exitStack, CFG
 	vector<set<unsigned>> targetPositions(_operation.output.size(), set<unsigned>{});
 	size_t numToKeep = 0;
 	for (size_t idx: ranges::views::iota(0u, targetPositions.size()))
-	{
-		auto offsets = findAllOffsets(stack, _operation.output.at(idx));
-		for (unsigned offset: offsets)
+		for (unsigned offset: findAllOffsets(stack, _operation.output.at(idx)))
 		{
 			targetPositions[idx].emplace(offset);
 			++numToKeep;
 		}
 
-	}
-
-	vector<variant<PreviousSlot, set<unsigned>>> layout;
-	size_t idx = 0;
-	for (auto slot: stack | ranges::views::drop_last(numToKeep))
-	{
-		layout.emplace_back(PreviousSlot{idx++});
-	}
+	auto layout = ranges::views::iota(0u, stack.size() - numToKeep) |
+		ranges::views::transform([](size_t _index) { return PreviousSlot{_index}; }) |
+		ranges::to<vector<variant<PreviousSlot, set<unsigned>>>>;
 	// The call produces values with known target positions.
 	layout += targetPositions;
 
@@ -157,30 +151,20 @@ Stack StackLayoutGenerator::propagateStackThroughOperation(Stack _exitStack, CFG
 	//   cxx20::erase_if(*m_stack, [](StackSlot const& _slot) { return holds_alternative<FunctionCallReturnLabelSlot>(_slot); });
 	// Consider removing them properly while accounting for the induced backwards stack shuffling.
 
-	for (auto&& [idx, slot]: stack | ranges::views::enumerate | ranges::views::reverse)
-		// We can always push literals, junk and function call return labels.
-		if (holds_alternative<LiteralSlot>(slot) || holds_alternative<JunkSlot>(slot) || holds_alternative<FunctionCallReturnLabelSlot>(slot))
-			stack.pop_back(); // TODO: verify that this is fine during range traversal
-		// We can always dup values already on stack.
-		else if (util::findOffset(stack | ranges::views::take(idx), slot))
-			stack.pop_back();
-		else
-			break;
+	// Remove anything from the stack top that can be freely generated or dupped from deeper on the stack.
+	while (!stack.empty() && (
+		canBeFreelyGenerated(stack.back()) ||
+		util::findOffset(stack | ranges::views::drop_last(1), stack.back())
+	))
+		stack.pop_back();
 
 	// TODO: suboptimal. Should account for induced stack shuffling.
+	// TODO: consider if we want this kind of compression at all, resp. whether stack.size() > 12 is a good condition.
 	if (stack.size() > 12)
-	{
-		Stack newStack;
-		for (auto slot: stack)
-		{
-			if (holds_alternative<LiteralSlot>(slot) || holds_alternative<FunctionCallReturnLabelSlot>(slot))
-				continue;
-			if (util::findOffset(newStack, slot))
-				continue;
-			newStack.emplace_back(slot);
-		}
-		stack = newStack;
-	}
+		stack = stack | ranges::views::enumerate | ranges::views::filter(util::mapTuple([&](size_t _index, StackSlot const& _slot) {
+			// Filter out slots that can be freely generated or are already present on the stack.
+			return !canBeFreelyGenerated(_slot) && !util::findOffset(stack | ranges::views::take(_index), _slot);
+		})) | ranges::views::values | ranges::to<Stack>;
 	return stack;
 }
 
@@ -192,14 +176,14 @@ Stack StackLayoutGenerator::propagateStackThroughBlock(Stack _exitStack, CFG::Ba
 	return stack;
 }
 
-void StackLayoutGenerator::processEntryPoint(CFG::BasicBlock const* _entry)
+void StackLayoutGenerator::processEntryPoint(CFG::BasicBlock const& _entry)
 {
-	std::list<CFG::BasicBlock const*> toVisit{_entry};
+	std::list<CFG::BasicBlock const*> toVisit{&_entry};
 	std::set<CFG::BasicBlock const*> visited;
 
 	while (!toVisit.empty())
 	{
-		// TODO: calculate this only once.
+		// TODO: calculate backwardsJumps only once.
 		std::list<std::pair<CFG::BasicBlock const*, CFG::BasicBlock const*>> backwardsJumps;
 		while (!toVisit.empty())
 		{
@@ -285,6 +269,8 @@ void StackLayoutGenerator::processEntryPoint(CFG::BasicBlock const* _entry)
 				for (auto entry: block->entries)
 					toVisit.emplace_back(entry);
 			}
+			else
+				continue;
 		}
 
 		for (auto [block, target]: backwardsJumps)
@@ -319,6 +305,9 @@ void StackLayoutGenerator::processEntryPoint(CFG::BasicBlock const* _entry)
 				// of already seen exit layouts above, I'm not sure yet why.
 			}
 	}
+
+	stitchConditionalJumps(_entry);
+	fixStackTooDeep(_entry);
 }
 
 Stack StackLayoutGenerator::combineStack(Stack const& _stack1, Stack const& _stack2)
@@ -362,7 +351,7 @@ Stack StackLayoutGenerator::combineStack(Stack const& _stack1, Stack const& _sta
 	//		return candidate;
 
 	auto evaluate = [&](Stack const& _candidate) -> size_t {
-		unsigned numOps = 0;
+		size_t numOps = 0;
 		Stack testStack = _candidate;
 		auto swap = [&](unsigned _swapDepth) { ++numOps; if (_swapDepth > 16) numOps += 1000; };
 		auto dup = [&](unsigned _dupDepth) { ++numOps; if (_dupDepth > 16) numOps += 1000; };
@@ -371,6 +360,12 @@ Stack StackLayoutGenerator::combineStack(Stack const& _stack1, Stack const& _sta
 			{
 				auto offsetInPrefix = util::findOffset(commonPrefix, _slot);
 				yulAssert(offsetInPrefix, "");
+				// Effectively this is a dup.
+				++numOps;
+				// TODO: Verify that this is correct. The idea is to penalize dupping stuff up that's too deep in
+				//       the prefix at this point.
+				if (commonPrefix.size() + testStack.size() - *offsetInPrefix > 16)
+					numOps += 1000;
 			}
 		};
 		createStackLayout(testStack, stack1Tail, swap, dup, push, [&](){} );
@@ -406,10 +401,10 @@ Stack StackLayoutGenerator::combineStack(Stack const& _stack1, Stack const& _sta
 	return commonPrefix + sortedCandidates.begin()->second;
 }
 
-void StackLayoutGenerator::stitchConditionalJumps(CFG::BasicBlock& _block)
+void StackLayoutGenerator::stitchConditionalJumps(CFG::BasicBlock const& _block)
 {
-	util::BreadthFirstSearch<CFG::BasicBlock*> breadthFirstSearch{{&_block}};
-	breadthFirstSearch.run([&](CFG::BasicBlock* _block, auto _addChild) {
+	util::BreadthFirstSearch<CFG::BasicBlock const*> breadthFirstSearch{{&_block}};
+	breadthFirstSearch.run([&](CFG::BasicBlock const* _block, auto _addChild) {
 		auto& info = m_layout.blockInfos.at(_block);
 		std::visit(util::GenericVisitor{
 			[&](CFG::BasicBlock::MainExit const&) {},
@@ -452,12 +447,14 @@ void StackLayoutGenerator::stitchConditionalJumps(CFG::BasicBlock& _block)
 	});
 }
 
-void StackLayoutGenerator::fixStackTooDeep(CFG::BasicBlock& _block)
+void StackLayoutGenerator::fixStackTooDeep(CFG::BasicBlock const& _block)
 {
 	// This is just an initial proof of concept. Doing this in a clever way and in all cases will take some doing.
+	// It might be enough to keep it at fixing inner-block issues and leave inter-block issues to the stack limit
+	// evader.
 	// TODO: make sure this really always terminates.
-	util::BreadthFirstSearch<CFG::BasicBlock*> breadthFirstSearch{{&_block}};
-	breadthFirstSearch.run([&](CFG::BasicBlock* _block, auto _addChild) {
+	util::BreadthFirstSearch<CFG::BasicBlock const*> breadthFirstSearch{{&_block}};
+	breadthFirstSearch.run([&](CFG::BasicBlock const* _block, auto _addChild) {
 		Stack stack;
 		stack = m_layout.blockInfos.at(_block).entryLayout;
 
@@ -475,7 +472,7 @@ void StackLayoutGenerator::fixStackTooDeep(CFG::BasicBlock& _block)
 				stack = operationEntry;
 				if (cursor < _block->operations.size())
 				{
-					CFG::Operation& operation = _block->operations.at(cursor);
+					CFG::Operation const& operation = _block->operations.at(cursor);
 					for (size_t i = 0; i < operation.input.size(); i++)
 						stack.pop_back();
 					stack += operation.output;
@@ -484,7 +481,7 @@ void StackLayoutGenerator::fixStackTooDeep(CFG::BasicBlock& _block)
 			}
 			else
 			{
-				CFG::Operation& previousOperation = _block->operations.at(cursor - 1);
+				CFG::Operation const& previousOperation = _block->operations.at(cursor - 1);
 				if (auto const* assignment = get_if<CFG::Assignment>(&previousOperation.operation))
 				{
 					for (auto& slot: unreachable)
@@ -507,7 +504,7 @@ void StackLayoutGenerator::fixStackTooDeep(CFG::BasicBlock& _block)
 				--cursor;
 				if (cursor > 0)
 				{
-					CFG::Operation& ancestorOperation = _block->operations.at(cursor - 1);
+					CFG::Operation const& ancestorOperation = _block->operations.at(cursor - 1);
 					Stack& ancestorEntry = m_layout.operationEntryLayout.at(&ancestorOperation);
 					stack = ancestorEntry | ranges::views::take(ancestorEntry.size() - ancestorOperation.input.size()) | ranges::to<Stack>;
 					stack += ancestorOperation.output;
@@ -562,19 +559,9 @@ StackLayout StackLayoutGenerator::run(CFG const& _dfg)
 	StackLayout stackLayout;
 	StackLayoutGenerator stackLayoutGenerator{stackLayout};
 
-	stackLayoutGenerator.processEntryPoint(_dfg.entry);
+	stackLayoutGenerator.processEntryPoint(*_dfg.entry);
 	for (auto& functionInfo: _dfg.functionInfo | ranges::views::values)
-		stackLayoutGenerator.processEntryPoint(functionInfo.entry);
-
-	std::set<CFG::BasicBlock const*> visited;
-	stackLayoutGenerator.stitchConditionalJumps(*_dfg.entry);
-	for (auto& functionInfo: _dfg.functionInfo | ranges::views::values)
-		stackLayoutGenerator.stitchConditionalJumps(*functionInfo.entry);
-
-	stackLayoutGenerator.fixStackTooDeep(*_dfg.entry);
-	for (auto& functionInfo: _dfg.functionInfo | ranges::views::values)
-		stackLayoutGenerator.fixStackTooDeep(*functionInfo.entry);
-
+		stackLayoutGenerator.processEntryPoint(*functionInfo.entry);
 
 	return stackLayout;
 }

@@ -115,6 +115,8 @@ void OptimizedEVMCodeTransform::operator()(CFG::FunctionInfo const& _functionInf
 	(*this)(*_functionInfo.entry);
 
 	m_currentFunctionInfo = nullptr;
+	m_stack.clear();
+	m_assembly.setStackHeight(0);
 }
 
 void OptimizedEVMCodeTransform::operator()(CFG::FunctionCall const& _call)
@@ -202,6 +204,8 @@ void OptimizedEVMCodeTransform::operator()(CFG::BasicBlock const& _block)
 		[&](CFG::BasicBlock::MainExit const&)
 		{
 			m_assembly.appendInstruction(evmasm::Instruction::STOP);
+			m_assembly.setStackHeight(0);
+			m_stack.clear();
 		},
 		[&](CFG::BasicBlock::Jump const& _jump)
 		{
@@ -209,13 +213,15 @@ void OptimizedEVMCodeTransform::operator()(CFG::BasicBlock const& _block)
 			createStackLayout(entryLayout);
 
 			if (!m_blockLabels.count(_jump.target) && _jump.target->entries.size() == 1)
+			{
+				yulAssert(!_jump.backwards, "");
 				(*this)(*_jump.target);
+			}
 			else
 			{
 				if (!m_blockLabels.count(_jump.target))
 					m_blockLabels[_jump.target] = m_assembly.newLabelId();
 
-				yulAssert(m_stack == entryLayout, "");
 				m_assembly.appendJumpTo(m_blockLabels[_jump.target]);
 				if (!m_generated.count(_jump.target))
 					(*this)(*_jump.target);
@@ -250,9 +256,9 @@ void OptimizedEVMCodeTransform::operator()(CFG::BasicBlock const& _block)
 		},
 		[&](CFG::BasicBlock::FunctionReturn const& _functionReturn)
 		{
+			yulAssert(m_currentFunctionInfo, "");
 			yulAssert(m_currentFunctionInfo == _functionReturn.info, "");
 
-			yulAssert(m_currentFunctionInfo, "");
 			Stack exitStack = m_currentFunctionInfo->returnVariables | ranges::views::transform([](auto const& _varSlot){
 				return StackSlot{_varSlot};
 			}) | ranges::to<Stack>;
@@ -265,10 +271,16 @@ void OptimizedEVMCodeTransform::operator()(CFG::BasicBlock const& _block)
 			m_stack.clear();
 
 		},
-		[&](CFG::BasicBlock::Terminated const&) {}
+		[&](CFG::BasicBlock::Terminated const&)
+		{
+			m_assembly.setStackHeight(0);
+			m_stack.clear();
+		}
 	}, _block.exit);
 }
 
+// TODO: It may or may not be nicer to merge this with createStackLayout (e.g. by adding an option to it that
+//       disables actually emitting assembly output).
 Stack OptimizedEVMCodeTransform::tryCreateStackLayout(Stack const& _currentStack, Stack _targetStack)
 {
 	Stack unreachable;
@@ -310,45 +322,6 @@ Stack OptimizedEVMCodeTransform::tryCreateStackLayout(Stack const& _currentStack
 	return unreachable;
 }
 
-void OptimizedEVMCodeTransform::compressStack()
-{
-	static constexpr auto canBeRegenerated = [](StackSlot const& _slot) -> bool {
-		return holds_alternative<LiteralSlot>(_slot) || holds_alternative<FunctionCallReturnLabelSlot>(_slot);
-	};
-	while (!m_stack.empty())
-	{
-		auto top = m_stack.back();
-		if (canBeRegenerated(top))
-		{
-			m_assembly.appendInstruction(evmasm::Instruction::POP);
-			m_stack.pop_back();
-			continue;
-		}
-		if (auto offset = util::findOffset(m_stack, top))
-			if (*offset < m_stack.size() - 1)
-			{
-				m_assembly.appendInstruction(evmasm::Instruction::POP);
-				m_stack.pop_back();
-				continue;
-			}
-
-		size_t topSize = m_stack.size() > 16 ? 16 : m_stack.size();
-		for (auto&& [offset, slot]: (m_stack | ranges::views::take_last(topSize)) | ranges::views::enumerate)
-		{
-			if (offset == topSize - 1)
-				return;
-			if (canBeRegenerated(slot))
-			{
-				std::swap(m_stack.back(), m_stack.at(m_stack.size() - topSize + offset));
-				m_assembly.appendInstruction(evmasm::swapInstruction(static_cast<unsigned>(topSize - 1 - offset)));
-				m_stack.pop_back();
-				m_assembly.appendInstruction(evmasm::Instruction::POP);
-				break;
-			}
-		}
-	}
-}
-
 void OptimizedEVMCodeTransform::createStackLayout(Stack _targetStack)
 {
 	Stack commonPrefix;
@@ -363,9 +336,11 @@ void OptimizedEVMCodeTransform::createStackLayout(Stack _targetStack)
 
 	if (!tryCreateStackLayout(m_stack, _targetStack).empty())
 	{
-		yulAssert(false, ""); // Make this a hard failure now to focus on avoiding it earlier.
+		yulAssert(false, "Stack too deep."); // Make this a hard failure now to focus on avoiding it earlier.
 		// TODO: check if we can do better.
 		// Maybe switching to a general "fix everything deep first" algorithm.
+		// Or we just let these cases, that weren't fixed in the StackLayoutGenerator go through and report the
+		// need for stack limit evasion for these cases instead.
 		std::map<unsigned, StackSlot> slotsByDepth;
 		for (auto slot: _targetStack | ranges::views::take_last(_targetStack.size() - commonPrefix.size()))
 			if (auto offset = util::findOffset(m_stack | ranges::views::reverse | ranges::to<Stack>, slot))
@@ -420,11 +395,11 @@ void OptimizedEVMCodeTransform::createStackLayout(Stack _targetStack)
 						m_assembly.appendConstant(0);
 						return;
 					}
-				yulAssert(false, "");
+				yulAssert(false, "Variable not found on stack.");
 			},
 			[&](TemporarySlot const&)
 			{
-				yulAssert(false, "");
+				yulAssert(false, "Function call result requested, but not found on stack.");
 			},
 			[&](JunkSlot const&)
 			{
