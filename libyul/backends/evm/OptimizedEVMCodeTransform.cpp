@@ -17,7 +17,7 @@
 // SPDX-License-Identifier: GPL-3.0
 #include <libyul/backends/evm/OptimizedEVMCodeTransform.h>
 
-#include <libyul/backends/evm/DataFlowGraphBuilder.h>
+#include <libyul/ControlFlowGraphBuilder.h>
 #include <libyul/backends/evm/StackHelpers.h>
 #include <libyul/backends/evm/StackLayoutGenerator.h>
 
@@ -42,7 +42,7 @@ OptimizedEVMCodeTransform::OptimizedEVMCodeTransform(
 	AbstractAssembly& _assembly,
 	BuiltinContext& _builtinContext,
 	bool _useNamedLabelsForFunctions,
-	DFG const& _dfg,
+	CFG const& _dfg,
 	StackLayout const& _stackLayout
 ):
 m_assembly(_assembly),
@@ -61,7 +61,7 @@ void OptimizedEVMCodeTransform::assertLayoutCompatibility(Stack const& _currentS
 
 AbstractAssembly::LabelID OptimizedEVMCodeTransform::getFunctionLabel(Scope::Function const& _function)
 {
-	DFG::FunctionInfo const& functionInfo = m_dfg.functionInfo.at(&_function);
+	CFG::FunctionInfo const& functionInfo = m_dfg.functionInfo.at(&_function);
 	if (!m_functionLabels.count(&functionInfo))
 	{
 		m_functionLabels[&functionInfo] = m_useNamedLabelsForFunctions ?
@@ -93,7 +93,7 @@ void OptimizedEVMCodeTransform::validateSlot(StackSlot const& _slot, Expression 
 	}, _expression);
 }
 
-void OptimizedEVMCodeTransform::operator()(DFG::FunctionInfo const& _functionInfo)
+void OptimizedEVMCodeTransform::operator()(CFG::FunctionInfo const& _functionInfo)
 {
 	yulAssert(!m_currentFunctionInfo, "");
 	m_currentFunctionInfo = &_functionInfo;
@@ -117,7 +117,7 @@ void OptimizedEVMCodeTransform::operator()(DFG::FunctionInfo const& _functionInf
 	m_currentFunctionInfo = nullptr;
 }
 
-void OptimizedEVMCodeTransform::operator()(DFG::FunctionCall const& _call)
+void OptimizedEVMCodeTransform::operator()(CFG::FunctionCall const& _call)
 {
 	auto returnLabel = m_returnLabels.at(&_call.functionCall.get());
 
@@ -145,7 +145,7 @@ void OptimizedEVMCodeTransform::operator()(DFG::FunctionCall const& _call)
 	yulAssert(m_assembly.stackHeight() == static_cast<int>(m_stack.size()), "");
 }
 
-void OptimizedEVMCodeTransform::operator()(DFG::BuiltinCall const& _call)
+void OptimizedEVMCodeTransform::operator()(CFG::BuiltinCall const& _call)
 {
 	// Assert that we got a correct stack for the call.
 	for (auto&& [arg, slot]: ranges::zip_view(
@@ -157,7 +157,7 @@ void OptimizedEVMCodeTransform::operator()(DFG::BuiltinCall const& _call)
 		validateSlot(slot, arg);
 
 	m_assembly.setSourceLocation(locationOf(_call));
-	_call.builtin.get().generateCode(_call.functionCall, m_assembly, m_builtinContext, [](auto&&){});
+	static_cast<BuiltinFunctionForEVM const&>(_call.builtin.get()).generateCode(_call.functionCall, m_assembly, m_builtinContext, [](auto&&){});
 	for (size_t i = 0; i < _call.arguments; ++i)
 		m_stack.pop_back();
 	for (size_t i = 0; i < _call.builtin.get().returns.size(); ++i)
@@ -165,7 +165,7 @@ void OptimizedEVMCodeTransform::operator()(DFG::BuiltinCall const& _call)
 	yulAssert(m_assembly.stackHeight() == static_cast<int>(m_stack.size()), "");
 }
 
-void OptimizedEVMCodeTransform::operator()(DFG::Assignment const& _assignment)
+void OptimizedEVMCodeTransform::operator()(CFG::Assignment const& _assignment)
 {
 	for (auto& currentSlot: m_stack)
 		if (VariableSlot const* varSlot = get_if<VariableSlot>(&currentSlot))
@@ -176,7 +176,7 @@ void OptimizedEVMCodeTransform::operator()(DFG::Assignment const& _assignment)
 		currentSlot = varSlot;
 }
 
-void OptimizedEVMCodeTransform::operator()(DFG::BasicBlock const& _block)
+void OptimizedEVMCodeTransform::operator()(CFG::BasicBlock const& _block)
 {
 	if (m_generated.count(&_block))
 		return;
@@ -199,11 +199,11 @@ void OptimizedEVMCodeTransform::operator()(DFG::BasicBlock const& _block)
 	createStackLayout(exitLayout);
 
 	std::visit(util::GenericVisitor{
-		[&](DFG::BasicBlock::MainExit const&)
+		[&](CFG::BasicBlock::MainExit const&)
 		{
 			m_assembly.appendInstruction(evmasm::Instruction::STOP);
 		},
-		[&](DFG::BasicBlock::Jump const& _jump)
+		[&](CFG::BasicBlock::Jump const& _jump)
 		{
 			Stack const& entryLayout = m_stackLayout.blockInfos.at(_jump.target).entryLayout;
 			createStackLayout(entryLayout);
@@ -221,7 +221,7 @@ void OptimizedEVMCodeTransform::operator()(DFG::BasicBlock const& _block)
 					(*this)(*_jump.target);
 			}
 		},
-		[&](DFG::BasicBlock::ConditionalJump const& _conditionalJump)
+		[&](CFG::BasicBlock::ConditionalJump const& _conditionalJump)
 		{
 			if (!m_blockLabels.count(_conditionalJump.nonZero))
 				m_blockLabels[_conditionalJump.nonZero] = m_assembly.newLabelId();
@@ -248,7 +248,7 @@ void OptimizedEVMCodeTransform::operator()(DFG::BasicBlock const& _block)
 				(*this)(*_conditionalJump.nonZero);
 			}
 		},
-		[&](DFG::BasicBlock::FunctionReturn const& _functionReturn)
+		[&](CFG::BasicBlock::FunctionReturn const& _functionReturn)
 		{
 			yulAssert(m_currentFunctionInfo == _functionReturn.info, "");
 
@@ -265,7 +265,7 @@ void OptimizedEVMCodeTransform::operator()(DFG::BasicBlock const& _block)
 			m_stack.clear();
 
 		},
-		[&](DFG::BasicBlock::Terminated const&) {}
+		[&](CFG::BasicBlock::Terminated const&) {}
 	}, _block.exit);
 }
 
@@ -462,7 +462,7 @@ void OptimizedEVMCodeTransform::run(
 	bool _useNamedLabelsForFunctions
 )
 {
-	std::unique_ptr<DFG> dfg = DataFlowGraphBuilder::build(_analysisInfo, _dialect, _block);
+	std::unique_ptr<CFG> dfg = ControlFlowGraphBuilder::build(_analysisInfo, _dialect, _block);
 	StackLayout stackLayout = StackLayoutGenerator::run(*dfg);
 	OptimizedEVMCodeTransform optimizedCodeTransform(_assembly, _builtinContext, _useNamedLabelsForFunctions,  *dfg, stackLayout);
 	optimizedCodeTransform(*dfg->entry);

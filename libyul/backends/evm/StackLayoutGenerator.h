@@ -21,7 +21,7 @@
 
 #pragma once
 
-#include <libyul/backends/evm/DataFlowGraph.h>
+#include <libyul/ControlFlowGraph.h>
 
 #include <map>
 
@@ -37,44 +37,46 @@ struct StackLayout
 		/// The resulting stack layout after executing the block.
 		Stack exitLayout;
 	};
-	std::map<DFG::BasicBlock const*, BlockInfo> blockInfos;
+	std::map<CFG::BasicBlock const*, BlockInfo> blockInfos;
 	/// For each operation the complete stack layout that:
 	/// - has the slots required for the operation at the stack top.
 	/// - will have the operation result in a layout that makes it easy to achieve the next desired layout.
-	std::map<DFG::Operation const*, Stack> operationEntryLayout;
+	std::map<CFG::Operation const*, Stack> operationEntryLayout;
 };
 
 class StackLayoutGenerator
 {
 public:
-	static StackLayout run(DFG const& _dfg);
+	static StackLayout run(CFG const& _dfg);
 
 private:
 	StackLayoutGenerator(StackLayout& _context);
 
 	/// @returns the optimal entry stack layout, s.t. @a _operation can be applied to it and
 	/// the result can be transformed to @a _exitStack with minimal stack shuffling.
-	Stack propagateStackThroughOperation(Stack _exitStack, DFG::Operation const& _operation);
+	Stack propagateStackThroughOperation(Stack _exitStack, CFG::Operation const& _operation);
 
 	/// @returns the desired stack layout at the entry of @a _block, assuming the layout after
 	/// executing the block should be @a _exitStack.
-	Stack propagateStackThroughBlock(Stack _exitStack, DFG::BasicBlock const& _block);
+	Stack propagateStackThroughBlock(Stack _exitStack, CFG::BasicBlock const& _block);
 
 	/// Main algorithm walking the graph from entry to exit and propagating back the stack layouts to the entries.
 	/// Iteratively reruns itself along backwards jumps until the layout is stabilized.
-	void processEntryPoint(DFG::BasicBlock const* _entry);
+	void processEntryPoint(CFG::BasicBlock const* _entry);
 
 	/// After the main algorithms, layouts at conditional jumps are merely compatible, i.e. the exit layout of the
 	/// jumping block is a superset of the entry layout of the target block. This function modifies the entry layouts
 	/// of conditional jump targets, s.t. the entry layout of target blocks match the exit layout of the jumping block
 	/// exactly, except that slots not required after the jump are marked as `JunkSlot`s.
-	void stitchConditionalJumps(DFG::BasicBlock& _block);
+	void stitchConditionalJumps(CFG::BasicBlock& _block);
 
 	/// Calculates the ideal stack layout, s.t. both @a _stack1 and @a _stack2 can be achieved with minimal
 	/// stack shuffling when starting from the returned layout.
 	static Stack combineStack(Stack const& _stack1, Stack const& _stack2);
 
-	void fixStackTooDeep(DFG::BasicBlock& _block);
+	/// Tries to detect stack layout transitions that are bound to cause stack too deep errors and
+	/// attempts to reorganize the layout to avoid those cases.
+	void fixStackTooDeep(CFG::BasicBlock& _entry);
 
 	StackLayout& m_layout;
 };

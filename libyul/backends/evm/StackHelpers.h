@@ -18,7 +18,8 @@
 
 #pragma once
 
-#include <libyul/backends/evm/DataFlowGraph.h>
+#include <libyul/ControlFlowGraph.h>
+#include <libyul/Exceptions.h>
 
 #include <libsolutil/Visitor.h>
 
@@ -67,13 +68,10 @@ std::set<unsigned> findAllOffsets(Range&& _range, Value&& _value)
 }
 
 template<typename Swap, typename Dup, typename Pop, typename PushSlot>
-void createStackLayout(Stack& _currentStack, Stack const& _targetStack, Swap _swap, Dup _dup, PushSlot _push, Pop _pop, bool _silent = false)
+void createStackLayout(Stack& _currentStack, Stack const& _targetStack, Swap _swap, Dup _dup, PushSlot _push, Pop _pop)
 {
-	_silent = true;
 	if (_currentStack == _targetStack)
 		return;
-	if (!_silent)
-		std::cout << "CREATE STACK LAYOUT: " << stackToString(_targetStack) << " FROM " << stackToString(_currentStack) << std::endl;
 
 	if (_currentStack.empty())
 	{
@@ -90,34 +88,25 @@ void createStackLayout(Stack& _currentStack, Stack const& _targetStack, Swap _sw
 	auto topTargets = findAllOffsets(_targetStack, _currentStack.back());
 	if (topTargets.size() < findAllOffsets(_currentStack, _currentStack.back()).size())
 	{
-		if (!_silent)
-			std::cout << "POP TOP" << std::endl;
 		_pop();
 		_currentStack.pop_back();
-		createStackLayout(_currentStack, _targetStack, _swap, _dup, _push, _pop, _silent);
+		createStackLayout(_currentStack, _targetStack, _swap, _dup, _push, _pop);
 		return;
 	}
 	else if (_targetStack.size() >= _currentStack.size() && _targetStack.at(_currentStack.size() - 1) == _currentStack.back())
 	{
-		if (!_silent)
-			std::cout << "TOP is in place" << std::endl;
-
 		// Current top is in place.
 		// Dup deepest one to be dupped (TODO: choose optimal).
 		for (auto&& [offset, slot]: _currentStack | ranges::views::enumerate)
 		{
 			if (findAllOffsets(_currentStack, slot).size() < findAllOffsets(_targetStack, slot).size())
 			{
-				if (!_silent)
-					std::cout << "DUP" << std::endl;
-
 				auto leastDeepOccurrence = util::findOffset(_currentStack | ranges::views::reverse, slot);
 				yulAssert(leastDeepOccurrence, "");
 				_dup(static_cast<unsigned>(*leastDeepOccurrence + 1));
-				//_dup(static_cast<unsigned>(_currentStack.size() - offset));
 
 				_currentStack.emplace_back(_currentStack.at(offset));
-				createStackLayout(_currentStack, _targetStack, _swap, _dup, _push, _pop, _silent);
+				createStackLayout(_currentStack, _targetStack, _swap, _dup, _push, _pop);
 				return;
 			}
 		}
@@ -126,11 +115,9 @@ void createStackLayout(Stack& _currentStack, Stack const& _targetStack, Swap _sw
 		{
 			if (!util::findOffset(_currentStack, slot))
 			{
-				if (!_silent)
-					std::cout << "PUSH" << std::endl;
 				_push(slot);
 				_currentStack.emplace_back(slot);
-				createStackLayout(_currentStack, _targetStack, _swap, _dup, _push, _pop, _silent);
+				createStackLayout(_currentStack, _targetStack, _swap, _dup, _push, _pop);
 				return;
 			}
 		}
@@ -140,11 +127,9 @@ void createStackLayout(Stack& _currentStack, Stack const& _targetStack, Swap _sw
 		{
 			if (!(slot == _targetStack.at(offset)) && !(slot == _currentStack.back()))
 			{
-				if (!_silent)
-					std::cout << "SWAP " << offset << std::endl;
 				_swap(static_cast<unsigned>(_currentStack.size() - offset - 1));
 				std::swap(_currentStack.back(), _currentStack.at(offset));
-				createStackLayout(_currentStack, _targetStack, _swap, _dup, _push, _pop, _silent);
+				createStackLayout(_currentStack, _targetStack, _swap, _dup, _push, _pop);
 				return;
 			}
 		}
@@ -154,22 +139,16 @@ void createStackLayout(Stack& _currentStack, Stack const& _targetStack, Swap _sw
 	}
 	else
 	{
-		if (!_silent)
-			std::cout << "TOP is not in place" << std::endl;
-
 		for (unsigned deepestTopTarget: topTargets)
 		{
 			if (deepestTopTarget >= _currentStack.size())
 				break;
 			if (!(_currentStack.at(deepestTopTarget) == _targetStack.at(deepestTopTarget)))
 			{
-				if (!_silent)
-					std::cout << "Move into place " << deepestTopTarget << std::endl;
-
 				// Move top into place.
 				_swap(static_cast<unsigned>(_currentStack.size() - deepestTopTarget - 1));
 				std::swap(_currentStack.back(), _currentStack.at(deepestTopTarget));
-				createStackLayout(_currentStack, _targetStack, _swap, _dup, _push, _pop, _silent);
+				createStackLayout(_currentStack, _targetStack, _swap, _dup, _push, _pop);
 				return;
 			}
 		}
@@ -179,16 +158,13 @@ void createStackLayout(Stack& _currentStack, Stack const& _targetStack, Swap _sw
 		{
 			if (findAllOffsets(_currentStack, slot).size() < findAllOffsets(_targetStack, slot).size())
 			{
-				if (!_silent)
-					std::cout << "DUP " << offset << std::endl;
-
 				auto leastDeepOccurrence = util::findOffset(_currentStack | ranges::views::reverse, slot);
 				yulAssert(leastDeepOccurrence, "");
 				_dup(static_cast<unsigned>(*leastDeepOccurrence + 1));
 				// _dup(static_cast<unsigned>(_currentStack.size() - offset));
 
 				_currentStack.emplace_back(_currentStack.at(offset));
-				createStackLayout(_currentStack, _targetStack, _swap, _dup, _push, _pop, _silent);
+				createStackLayout(_currentStack, _targetStack, _swap, _dup, _push, _pop);
 				return;
 			}
 		}
@@ -197,21 +173,16 @@ void createStackLayout(Stack& _currentStack, Stack const& _targetStack, Swap _sw
 		{
 			if (!util::findOffset(_currentStack, slot))
 			{
-				if (!_silent)
-					std::cout << "PUSH" << std::endl;
 				_push(slot);
 				_currentStack.emplace_back(slot);
-				createStackLayout(_currentStack, _targetStack, _swap, _dup, _push, _pop, _silent);
+				createStackLayout(_currentStack, _targetStack, _swap, _dup, _push, _pop);
 				return;
 			}
 		}
 		yulAssert(false, "");
 	}
 
-	if (!_silent)
-		std::cout << "CREATED STACK LAYOUT: " << stackToString(_currentStack) << std::endl;
 	yulAssert(_currentStack == _targetStack, "");
-
 }
 
 }

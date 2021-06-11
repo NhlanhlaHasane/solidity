@@ -16,21 +16,21 @@
 */
 // SPDX-License-Identifier: GPL-3.0
 /**
- * Transformation of a Yul AST into a data flow graph.
+ * Transformation of a Yul AST into a control flow graph.
  */
 #pragma once
 
-#include <libyul/backends/evm/DataFlowGraph.h>
+#include <libyul/ControlFlowGraph.h>
 
 namespace solidity::yul
 {
 
-class DataFlowGraphBuilder
+class ControlFlowGraphBuilder
 {
 public:
-	DataFlowGraphBuilder(DataFlowGraphBuilder const&) = delete;
-	DataFlowGraphBuilder& operator=(DataFlowGraphBuilder const&) = delete;
-	static std::unique_ptr<DFG> build(AsmAnalysisInfo& _analysisInfo, EVMDialect const& _dialect, Block const& _block);
+	ControlFlowGraphBuilder(ControlFlowGraphBuilder const&) = delete;
+	ControlFlowGraphBuilder& operator=(ControlFlowGraphBuilder const&) = delete;
+	static std::unique_ptr<CFG> build(AsmAnalysisInfo& _analysisInfo, Dialect const& _dialect, Block const& _block);
 
 	StackSlot operator()(Expression const& _literal);
 	StackSlot operator()(Literal const& _literal);
@@ -52,29 +52,29 @@ public:
 	void operator()(FunctionDefinition const&);
 
 private:
-	DataFlowGraphBuilder(
-		DFG& _graph,
+	ControlFlowGraphBuilder(
+		CFG& _graph,
 		AsmAnalysisInfo& _analysisInfo,
-		EVMDialect const& _dialect
+		Dialect const& _dialect
 	);
-	DFG::Operation& visitFunctionCall(FunctionCall const&);
+	CFG::Operation& visitFunctionCall(FunctionCall const&);
 
 	Scope::Variable const& lookupVariable(YulString _name) const;
-	std::pair<DFG::BasicBlock*, DFG::BasicBlock*> makeConditionalJump(StackSlot _condition);
-	void makeConditionalJump(StackSlot _condition, DFG::BasicBlock& _nonZero, DFG::BasicBlock& _zero);
-	void jump(DFG::BasicBlock& _target, bool _backwards = false);
-	DFG& m_graph;
+	std::pair<CFG::BasicBlock*, CFG::BasicBlock*> makeConditionalJump(StackSlot _condition);
+	void makeConditionalJump(StackSlot _condition, CFG::BasicBlock& _nonZero, CFG::BasicBlock& _zero);
+	void jump(CFG::BasicBlock& _target, bool _backwards = false);
+	CFG& m_graph;
 	AsmAnalysisInfo& m_info;
-	EVMDialect const& m_dialect;
-	DFG::BasicBlock* m_currentBlock = nullptr;
+	Dialect const& m_dialect;
+	CFG::BasicBlock* m_currentBlock = nullptr;
 	Scope* m_scope = nullptr;
 	struct ForLoopInfo
 	{
-		std::reference_wrapper<DFG::BasicBlock> afterLoop;
-		std::reference_wrapper<DFG::BasicBlock> post;
+		std::reference_wrapper<CFG::BasicBlock> afterLoop;
+		std::reference_wrapper<CFG::BasicBlock> post;
 	};
 	std::optional<ForLoopInfo> m_forLoopInfo;
-	std::optional<DFG::BasicBlock::FunctionReturn> m_currentFunctionExit;
+	std::optional<CFG::BasicBlock::FunctionReturn> m_currentFunctionExit;
 };
 
 }

@@ -24,7 +24,7 @@
 #include <libyul/backends/evm/EVMAssembly.h>
 
 #include <libyul/backends/evm/EVMDialect.h>
-#include <libyul/backends/evm/DataFlowGraph.h>
+#include <libyul/ControlFlowGraph.h>
 #include <libyul/AST.h>
 #include <libyul/Scope.h>
 
@@ -58,7 +58,7 @@ private:
 		AbstractAssembly& _assembly,
 		BuiltinContext& _builtinContext,
 		bool _useNamedLabelsForFunctions,
-		DFG const& _dfg,
+		CFG const& _dfg,
 		StackLayout const& _stackLayout
 	);
 
@@ -68,12 +68,12 @@ private:
 	void compressStack();
 	void createStackLayout(Stack _targetStack);
 
-	void operator()(DFG::BasicBlock const& _block);
-	void operator()(DFG::FunctionInfo const& _functionInfo);
+	void operator()(CFG::BasicBlock const& _block);
+	void operator()(CFG::FunctionInfo const& _functionInfo);
 public:
-	void operator()(DFG::FunctionCall const& _call);
-	void operator()(DFG::BuiltinCall const& _call);
-	void operator()(DFG::Assignment const& _assignment);
+	void operator()(CFG::FunctionCall const& _call);
+	void operator()(CFG::BuiltinCall const& _call);
+	void operator()(CFG::Assignment const& _assignment);
 
 	static Stack tryCreateStackLayout(Stack const& m_stack, Stack _targetStack);
 
@@ -83,14 +83,14 @@ private:
 	AbstractAssembly& m_assembly;
 	BuiltinContext& m_builtinContext;
 	bool m_useNamedLabelsForFunctions = true;
-	DFG const& m_dfg;
+	CFG const& m_dfg;
 	StackLayout const& m_stackLayout;
 	Stack m_stack;
 	std::map<yul::FunctionCall const*, AbstractAssembly::LabelID> m_returnLabels;
-	std::map<DFG::BasicBlock const*, AbstractAssembly::LabelID> m_blockLabels;
-	std::map<DFG::FunctionInfo const*, AbstractAssembly::LabelID> m_functionLabels;
-	std::set<DFG::BasicBlock const*> m_generated;
-	DFG::FunctionInfo const* m_currentFunctionInfo = nullptr;
+	std::map<CFG::BasicBlock const*, AbstractAssembly::LabelID> m_blockLabels;
+	std::map<CFG::FunctionInfo const*, AbstractAssembly::LabelID> m_functionLabels;
+	std::set<CFG::BasicBlock const*> m_generated;
+	CFG::FunctionInfo const* m_currentFunctionInfo = nullptr;
 };
 
 }

@@ -32,6 +32,9 @@ add_library(yul
 	AsmPrinter.h
 	AssemblyStack.h
 	AssemblyStack.cpp
+	ControlFlowGraph.h
+	ControlFlowGraphBuilder.cpp
+	ControlFlowGraphBuilder.h
 	CompilabilityChecker.cpp
 	CompilabilityChecker.h
 	Dialect.cpp
@@ -53,9 +56,6 @@ add_library(yul
 	backends/evm/AsmCodeGen.h
 	backends/evm/ConstantOptimiser.cpp
 	backends/evm/ConstantOptimiser.h
-	backends/evm/DataFlowGraph.h
-	backends/evm/DataFlowGraphBuilder.cpp
-	backends/evm/DataFlowGraphBuilder.h
 	backends/evm/EthAssemblyAdapter.cpp
 	backends/evm/EthAssemblyAdapter.h
 	backends/evm/EVMAssembly.cpp

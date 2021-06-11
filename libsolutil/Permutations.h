@@ -24,6 +24,8 @@
 namespace solidity::util
 {
 
+// TODO: This is currently only used for permuteDup as special case handling, which is not the best way to do things.
+//       Not worth spending time reviewing this.
 template<typename GetTargetPosition, typename Swap, typename Pop>
 void permute(unsigned _n, GetTargetPosition _getTargetPosition, Swap _swap, Pop _pop)
 {
@@ -74,6 +76,10 @@ void permute(unsigned _n, GetTargetPosition _getTargetPosition, Swap _swap, Pop 
 	}
 }
 
+// TODO: This is now only used in StackLayoutGenerator.cpp in ``createIdealLayout`` and that usage is actually abuse,
+//       since it provides "invalid" target positions (it works, but it's not soundly specified).
+//       Hence ``createIdealLayout`` should rather be rewritten properly and it does not make much sense to review
+//       this in detail.
 template<typename GetTargetPositions, typename Swap, typename Dup, typename Push, typename Pop>
 void permuteDup(unsigned _n, GetTargetPositions _getTargetPositions, Swap _swap, Dup _dup, Push _push, Pop _pop, bool _debug = false)
 {

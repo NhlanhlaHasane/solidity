@@ -16,18 +16,18 @@
 */
 // SPDX-License-Identifier: GPL-3.0
 /**
- * Data flow graph and stack layout structures used during code generation.
+ * Control flow graph and stack layout structures used during code generation.
  */
 
 #pragma once
 
 #include <libyul/AST.h>
 #include <libyul/AsmAnalysisInfo.h>
-#include <libyul/backends/evm/EVMDialect.h>
-
-#include <libyul/optimiser/ASTWalker.h>
+#include <libyul/Dialect.h>
 #include <libyul/Scope.h>
 
+#include <functional>
+#include <list>
 #include <vector>
 
 namespace solidity::yul
@@ -96,19 +96,19 @@ inline bool canBeFreelyGenerated(StackSlot const& _slot)
 	return std::visit([](auto const& _typedSlot) { return std::decay_t<decltype(_typedSlot)>::canBeFreelyGenerated; }, _slot);
 }
 
-/// Data flow graph consisting of ``DFG::BasicBlock``s connected by control flow.
-struct DFG
+/// Control flow graph consisting of ``DFG::BasicBlock``s connected by control flow.
+struct CFG
 {
-	explicit DFG() {}
-	DFG(DFG const&) = delete;
-	DFG(DFG&&) = delete;
-	DFG& operator=(DFG const&) = delete;
-	DFG& operator=(DFG&&) = delete;
+	explicit CFG() {}
+	CFG(CFG const&) = delete;
+	CFG(CFG&&) = delete;
+	CFG& operator=(CFG const&) = delete;
+	CFG& operator=(CFG&&) = delete;
 
 	struct BuiltinCall
 	{
 		std::shared_ptr<DebugData const> debugData;
-		std::reference_wrapper<BuiltinFunctionForEVM const> builtin;
+		std::reference_wrapper<BuiltinFunction const> builtin;
 		std::reference_wrapper<yul::FunctionCall const> functionCall;
 		/// Number of proper arguments with a position on the stack, excluding literal arguments.
 		size_t arguments = 0;
@@ -156,7 +156,7 @@ struct DFG
 			/// The only backwards jumps are jumps from loop post to loop condition.
 			bool backwards = false;
 		};
-		struct FunctionReturn { DFG::FunctionInfo* info = nullptr; };
+		struct FunctionReturn { CFG::FunctionInfo* info = nullptr; };
 		struct Terminated {};
 		std::variant<MainExit, Jump, ConditionalJump, FunctionReturn, Terminated> exit = MainExit{};
 	};

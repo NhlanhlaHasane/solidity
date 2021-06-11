@@ -113,7 +113,7 @@ Stack createIdealLayout(Stack const& post, vector<variant<PreviousSlot, set<unsi
 }
 }
 
-Stack StackLayoutGenerator::propagateStackThroughOperation(Stack _exitStack, DFG::Operation const& _operation)
+Stack StackLayoutGenerator::propagateStackThroughOperation(Stack _exitStack, CFG::Operation const& _operation)
 {
 	Stack& stack = _exitStack;
 
@@ -141,7 +141,7 @@ Stack StackLayoutGenerator::propagateStackThroughOperation(Stack _exitStack, DFG
 
 	stack = createIdealLayout(stack, layout);
 
-	if (auto const* assignment = get_if<DFG::Assignment>(&_operation.operation))
+	if (auto const* assignment = get_if<CFG::Assignment>(&_operation.operation))
 		for (auto& stackSlot: stack)
 			if (auto const* varSlot = get_if<VariableSlot>(&stackSlot))
 				if (util::findOffset(assignment->variables, *varSlot))
@@ -184,7 +184,7 @@ Stack StackLayoutGenerator::propagateStackThroughOperation(Stack _exitStack, DFG
 	return stack;
 }
 
-Stack StackLayoutGenerator::propagateStackThroughBlock(Stack _exitStack, DFG::BasicBlock const& _block)
+Stack StackLayoutGenerator::propagateStackThroughBlock(Stack _exitStack, CFG::BasicBlock const& _block)
 {
 	Stack stack = std::move(_exitStack);
 	for (auto& operation: _block.operations | ranges::views::reverse)
@@ -192,30 +192,30 @@ Stack StackLayoutGenerator::propagateStackThroughBlock(Stack _exitStack, DFG::Ba
 	return stack;
 }
 
-void StackLayoutGenerator::processEntryPoint(DFG::BasicBlock const* _entry)
+void StackLayoutGenerator::processEntryPoint(CFG::BasicBlock const* _entry)
 {
-	std::list<DFG::BasicBlock const*> toVisit{_entry};
-	std::set<DFG::BasicBlock const*> visited;
+	std::list<CFG::BasicBlock const*> toVisit{_entry};
+	std::set<CFG::BasicBlock const*> visited;
 
 	while (!toVisit.empty())
 	{
 		// TODO: calculate this only once.
-		std::list<std::pair<DFG::BasicBlock const*, DFG::BasicBlock const*>> backwardsJumps;
+		std::list<std::pair<CFG::BasicBlock const*, CFG::BasicBlock const*>> backwardsJumps;
 		while (!toVisit.empty())
 		{
-			DFG::BasicBlock const *block = *toVisit.begin();
+			CFG::BasicBlock const *block = *toVisit.begin();
 			toVisit.pop_front();
 
 			if (visited.count(block))
 				continue;
 
 			if (std::optional<Stack> exitLayout = std::visit(util::GenericVisitor{
-				[&](DFG::BasicBlock::MainExit const&) -> std::optional<Stack>
+				[&](CFG::BasicBlock::MainExit const&) -> std::optional<Stack>
 				{
 					visited.emplace(block);
 					return Stack{};
 				},
-				[&](DFG::BasicBlock::Jump const& _jump) -> std::optional<Stack>
+				[&](CFG::BasicBlock::Jump const& _jump) -> std::optional<Stack>
 				{
 					if (_jump.backwards)
 					{
@@ -233,7 +233,7 @@ void StackLayoutGenerator::processEntryPoint(DFG::BasicBlock const* _entry)
 					toVisit.emplace_front(_jump.target);
 					return nullopt;
 				},
-				[&](DFG::BasicBlock::ConditionalJump const& _conditionalJump) -> std::optional<Stack>
+				[&](CFG::BasicBlock::ConditionalJump const& _conditionalJump) -> std::optional<Stack>
 				{
 					bool zeroVisited = visited.count(_conditionalJump.zero);
 					bool nonZeroVisited = visited.count(_conditionalJump.nonZero);
@@ -253,7 +253,7 @@ void StackLayoutGenerator::processEntryPoint(DFG::BasicBlock const* _entry)
 						toVisit.emplace_front(_conditionalJump.nonZero);
 					return nullopt;
 				},
-				[&](DFG::BasicBlock::FunctionReturn const& _functionReturn) -> std::optional<Stack>
+				[&](CFG::BasicBlock::FunctionReturn const& _functionReturn) -> std::optional<Stack>
 				{
 					visited.emplace(block);
 					yulAssert(_functionReturn.info, "");
@@ -263,7 +263,7 @@ void StackLayoutGenerator::processEntryPoint(DFG::BasicBlock const* _entry)
 					stack.emplace_back(FunctionReturnLabelSlot{});
 					return stack;
 				},
-				[&](DFG::BasicBlock::Terminated const&) -> std::optional<Stack>
+				[&](CFG::BasicBlock::Terminated const&) -> std::optional<Stack>
 				{
 					visited.emplace(block);
 					return Stack{};
@@ -300,8 +300,8 @@ void StackLayoutGenerator::processEntryPoint(DFG::BasicBlock const* _entry)
 				// In particular we can visit backwards starting from ``block`` and mark all entries to-be-visited-
 				// again until we hit ``target``.
 				toVisit.emplace_front(block);
-				util::BreadthFirstSearch<DFG::BasicBlock const*>{{block}}.run(
-					[&visited, target = target](DFG::BasicBlock const* _block, auto _addChild) {
+				util::BreadthFirstSearch<CFG::BasicBlock const*>{{block}}.run(
+					[&visited, target = target](CFG::BasicBlock const* _block, auto _addChild) {
 						visited.erase(_block);
 						if (_block == target)
 							return;
@@ -338,14 +338,14 @@ Stack StackLayoutGenerator::combineStack(Stack const& _stack1, Stack const& _sta
 			break;
 		commonPrefix.emplace_back(slot1);
 	}
-	Stack stack1 = _stack1 | ranges::views::drop(commonPrefix.size()) | ranges::to<Stack>;
-	Stack stack2 = _stack2 | ranges::views::drop(commonPrefix.size()) | ranges::to<Stack>;
+	Stack stack1Tail = _stack1 | ranges::views::drop(commonPrefix.size()) | ranges::to<Stack>;
+	Stack stack2Tail = _stack2 | ranges::views::drop(commonPrefix.size()) | ranges::to<Stack>;
 
 	Stack candidate;
-	for (auto slot: stack1)
+	for (auto slot: stack1Tail)
 		if (!util::findOffset(candidate, slot))
 			candidate.emplace_back(slot);
-	for (auto slot: stack2)
+	for (auto slot: stack2Tail)
 		if (!util::findOffset(candidate, slot))
 			candidate.emplace_back(slot);
 	cxx20::erase_if(candidate, [](StackSlot const& slot) {
@@ -354,31 +354,28 @@ Stack StackLayoutGenerator::combineStack(Stack const& _stack1, Stack const& _sta
 
 	std::map<size_t, Stack> sortedCandidates;
 
-/*	if (candidate.size() > 8)
-		return candidate;*/
+	// TODO: surprisingly this works for rather comparably large candidate size, but we should probably
+	// set up some limit, since this will quickly explode otherwise.
+	// Ideally we would then have a better fallback mechanism - although returning any naive union of both stacks
+	// like ``candidate`` itself may just be fine.
+	//	if (candidate.size() > 8)
+	//		return candidate;
 
 	auto evaluate = [&](Stack const& _candidate) -> size_t {
 		unsigned numOps = 0;
 		Stack testStack = _candidate;
-		createStackLayout(
-			testStack,
-			stack1,
-			[&](unsigned _swapDepth) { ++numOps; if (_swapDepth > 16) numOps += 1000; },
-			[&](unsigned _dupDepth) { ++numOps; if (_dupDepth > 16) numOps += 1000; },
-			[&](StackSlot const&) {},
-			[&](){},
-			true
-		);
+		auto swap = [&](unsigned _swapDepth) { ++numOps; if (_swapDepth > 16) numOps += 1000; };
+		auto dup = [&](unsigned _dupDepth) { ++numOps; if (_dupDepth > 16) numOps += 1000; };
+		auto push = [&](StackSlot const& _slot) {
+			if (!canBeFreelyGenerated(_slot))
+			{
+				auto offsetInPrefix = util::findOffset(commonPrefix, _slot);
+				yulAssert(offsetInPrefix, "");
+			}
+		};
+		createStackLayout(testStack, stack1Tail, swap, dup, push, [&](){} );
 		testStack = _candidate;
-		createStackLayout(
-			testStack,
-			stack2,
-			[&](unsigned _swapDepth) { ++numOps; if (_swapDepth > 16) numOps += 1000;  },
-			[&](unsigned _dupDepth) { ++numOps; if (_dupDepth > 16) numOps += 1000; },
-			[&](StackSlot const&) {},
-			[&](){},
-			true
-		);
+		createStackLayout(testStack, stack2Tail, swap, dup, push, [&](){});
 		return numOps;
 	};
 
@@ -406,24 +403,22 @@ Stack StackLayoutGenerator::combineStack(Stack const& _stack1, Stack const& _sta
 		}
 	}
 
-	for (auto slot: sortedCandidates.begin()->second)
-		commonPrefix.emplace_back(slot);
-	return commonPrefix;
+	return commonPrefix + sortedCandidates.begin()->second;
 }
 
-void StackLayoutGenerator::stitchConditionalJumps(DFG::BasicBlock& _block)
+void StackLayoutGenerator::stitchConditionalJumps(CFG::BasicBlock& _block)
 {
-	util::BreadthFirstSearch<DFG::BasicBlock*> breadthFirstSearch{{&_block}};
-	breadthFirstSearch.run([&](DFG::BasicBlock* _block, auto _addChild) {
+	util::BreadthFirstSearch<CFG::BasicBlock*> breadthFirstSearch{{&_block}};
+	breadthFirstSearch.run([&](CFG::BasicBlock* _block, auto _addChild) {
 		auto& info = m_layout.blockInfos.at(_block);
 		std::visit(util::GenericVisitor{
-			[&](DFG::BasicBlock::MainExit const&) {},
-			[&](DFG::BasicBlock::Jump const& _jump)
+			[&](CFG::BasicBlock::MainExit const&) {},
+			[&](CFG::BasicBlock::Jump const& _jump)
 			{
 				if (!_jump.backwards)
 					_addChild(_jump.target);
 			},
-			[&](DFG::BasicBlock::ConditionalJump const& _conditionalJump)
+			[&](CFG::BasicBlock::ConditionalJump const& _conditionalJump)
 			{
 				auto& zeroTargetInfo = m_layout.blockInfos.at(_conditionalJump.zero);
 				auto& nonZeroTargetInfo = m_layout.blockInfos.at(_conditionalJump.nonZero);
@@ -451,18 +446,18 @@ void StackLayoutGenerator::stitchConditionalJumps(DFG::BasicBlock& _block)
 				_addChild(_conditionalJump.zero);
 				_addChild(_conditionalJump.nonZero);
 			},
-			[&](DFG::BasicBlock::FunctionReturn const&)	{},
-			[&](DFG::BasicBlock::Terminated const&) { },
+			[&](CFG::BasicBlock::FunctionReturn const&)	{},
+			[&](CFG::BasicBlock::Terminated const&) { },
 		}, _block->exit);
 	});
 }
 
-void StackLayoutGenerator::fixStackTooDeep(DFG::BasicBlock& _block)
+void StackLayoutGenerator::fixStackTooDeep(CFG::BasicBlock& _block)
 {
 	// This is just an initial proof of concept. Doing this in a clever way and in all cases will take some doing.
 	// TODO: make sure this really always terminates.
-	util::BreadthFirstSearch<DFG::BasicBlock*> breadthFirstSearch{{&_block}};
-	breadthFirstSearch.run([&](DFG::BasicBlock* _block, auto _addChild) {
+	util::BreadthFirstSearch<CFG::BasicBlock*> breadthFirstSearch{{&_block}};
+	breadthFirstSearch.run([&](CFG::BasicBlock* _block, auto _addChild) {
 		Stack stack;
 		stack = m_layout.blockInfos.at(_block).entryLayout;
 
@@ -480,7 +475,7 @@ void StackLayoutGenerator::fixStackTooDeep(DFG::BasicBlock& _block)
 				stack = operationEntry;
 				if (cursor < _block->operations.size())
 				{
-					DFG::Operation& operation = _block->operations.at(cursor);
+					CFG::Operation& operation = _block->operations.at(cursor);
 					for (size_t i = 0; i < operation.input.size(); i++)
 						stack.pop_back();
 					stack += operation.output;
@@ -489,13 +484,14 @@ void StackLayoutGenerator::fixStackTooDeep(DFG::BasicBlock& _block)
 			}
 			else
 			{
-				DFG::Operation& previousOperation = _block->operations.at(cursor - 1);
-				if (auto const* assignment = get_if<DFG::Assignment>(&previousOperation.operation))
+				CFG::Operation& previousOperation = _block->operations.at(cursor - 1);
+				if (auto const* assignment = get_if<CFG::Assignment>(&previousOperation.operation))
 				{
 					for (auto& slot: unreachable)
 						if (VariableSlot const* varSlot = get_if<VariableSlot>(&slot))
 							if (util::findOffset(assignment->variables, *varSlot))
 							{
+								// TODO: proper warning
 								std::cout << "Unreachable slot after assignment." << std::endl;
 								std::cout << "CANNOT FIX YET" << std::endl;
 								return;
@@ -511,7 +507,7 @@ void StackLayoutGenerator::fixStackTooDeep(DFG::BasicBlock& _block)
 				--cursor;
 				if (cursor > 0)
 				{
-					DFG::Operation& ancestorOperation = _block->operations.at(cursor - 1);
+					CFG::Operation& ancestorOperation = _block->operations.at(cursor - 1);
 					Stack& ancestorEntry = m_layout.operationEntryLayout.at(&ancestorOperation);
 					stack = ancestorEntry | ranges::views::take(ancestorEntry.size() - ancestorOperation.input.size()) | ranges::to<Stack>;
 					stack += ancestorOperation.output;
@@ -524,26 +520,29 @@ void StackLayoutGenerator::fixStackTooDeep(DFG::BasicBlock& _block)
 		stack = m_layout.blockInfos.at(_block).exitLayout;
 
 		std::visit(util::GenericVisitor{
-			[&](DFG::BasicBlock::MainExit const&) {},
-			[&](DFG::BasicBlock::Jump const& _jump)
+			[&](CFG::BasicBlock::MainExit const&) {},
+			[&](CFG::BasicBlock::Jump const& _jump)
 			{
 				auto unreachable = OptimizedEVMCodeTransform::tryCreateStackLayout(stack, m_layout.blockInfos.at(_jump.target).entryLayout);
 				if (!unreachable.empty())
+					// TODO: proper warning
 					std::cout << "UNREACHABLE SLOTS AT JUMP: " << stackToString(unreachable) << std::endl
 						<< "CANNOT FIX YET" << std::endl;
 
 				if (!_jump.backwards)
 					_addChild(_jump.target);
 			},
-			[&](DFG::BasicBlock::ConditionalJump const& _conditionalJump)
+			[&](CFG::BasicBlock::ConditionalJump const& _conditionalJump)
 			{
 				auto unreachable = OptimizedEVMCodeTransform::tryCreateStackLayout(stack, m_layout.blockInfos.at(_conditionalJump.zero).entryLayout);
 				if (!unreachable.empty())
+					// TODO: proper warning
 					std::cout
 						<< "UNREACHABLE SLOTS AT CONDITIONAL JUMP: " << stackToString(unreachable) << std::endl
 						<< "CANNOT FIX YET" << std::endl;
 				unreachable = OptimizedEVMCodeTransform::tryCreateStackLayout(stack, m_layout.blockInfos.at(_conditionalJump.nonZero).entryLayout);
 				if (!unreachable.empty())
+					// TODO: proper warning
 					std::cout
 						<< "UNREACHABLE SLOTS AT CONDITIONAL JUMP: " << stackToString(unreachable) << std::endl
 						<< "CANNOT FIX YET" << std::endl;
@@ -551,14 +550,14 @@ void StackLayoutGenerator::fixStackTooDeep(DFG::BasicBlock& _block)
 				_addChild(_conditionalJump.zero);
 				_addChild(_conditionalJump.nonZero);
 			},
-			[&](DFG::BasicBlock::FunctionReturn const&) {},
-			[&](DFG::BasicBlock::Terminated const&) { },
+			[&](CFG::BasicBlock::FunctionReturn const&) {},
+			[&](CFG::BasicBlock::Terminated const&) { },
 		}, _block->exit);
 
 	});
 }
 
-StackLayout StackLayoutGenerator::run(DFG const& _dfg)
+StackLayout StackLayoutGenerator::run(CFG const& _dfg)
 {
 	StackLayout stackLayout;
 	StackLayoutGenerator stackLayoutGenerator{stackLayout};
@@ -567,7 +566,7 @@ StackLayout StackLayoutGenerator::run(DFG const& _dfg)
 	for (auto& functionInfo: _dfg.functionInfo | ranges::views::values)
 		stackLayoutGenerator.processEntryPoint(functionInfo.entry);
 
-	std::set<DFG::BasicBlock const*> visited;
+	std::set<CFG::BasicBlock const*> visited;
 	stackLayoutGenerator.stitchConditionalJumps(*_dfg.entry);
 	for (auto& functionInfo: _dfg.functionInfo | ranges::views::values)
 		stackLayoutGenerator.stitchConditionalJumps(*functionInfo.entry);
