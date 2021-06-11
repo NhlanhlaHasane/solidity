@@ -34,6 +34,9 @@ add_library(yul
 	AssemblyStack.cpp
 	CompilabilityChecker.cpp
 	CompilabilityChecker.h
+	ControlFlowGraph.h
+	ControlFlowGraphBuilder.cpp
+	ControlFlowGraphBuilder.h
 	Dialect.cpp
 	Dialect.h
 	Exceptions.h
